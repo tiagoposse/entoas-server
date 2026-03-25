@@ -1142,10 +1142,28 @@ func (e *Extension) getSortableFields(node *gen.Type) []sortableField {
 	}
 
 	var result []sortableField
-	// Always include id, created_at, updated_at as sortable
+	// Build a map of field names to their StructField for quick lookup
+	fieldMap := make(map[string]string)
+	for _, f := range node.Fields {
+		fieldMap[f.Name] = f.StructField()
+	}
+	// Include id, created_at, updated_at only if they exist on the entity
 	for _, name := range []string{"id", "created_at", "updated_at"} {
-		if !excludeSet[name] {
-			result = append(result, sortableField{Name: name, StructField: snakeToPascal(name)})
+		if sf, ok := fieldMap[name]; ok && !excludeSet[name] {
+			result = append(result, sortableField{Name: name, StructField: sf})
+		}
+	}
+	// id is always the ID field from Ent (special case - not in Fields)
+	if !excludeSet["id"] {
+		found := false
+		for _, r := range result {
+			if r.Name == "id" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			result = append(result, sortableField{Name: "id", StructField: "ID"})
 		}
 	}
 	for _, f := range node.Fields {

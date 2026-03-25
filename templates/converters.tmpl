@@ -138,8 +138,8 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 		{{- range $e := $node.Edges }}
 		{{- if not $e.Unique }}
 		case "{{ $e.Name }}_count":
-			if e.Edges.{{ snakeToPascal $e.Name }} != nil && fieldValue.CanSet() {
-				count := len(e.Edges.{{ snakeToPascal $e.Name }})
+			if e.Edges.{{ $e.StructField }} != nil && fieldValue.CanSet() {
+				count := len(e.Edges.{{ $e.StructField }})
 				if fieldValue.Kind() == reflect.Int {
 					fieldValue.SetInt(int64(count))
 				} else if fieldValue.Kind() == reflect.Ptr && fieldValue.Type().Elem().Kind() == reflect.Int {
@@ -149,8 +149,8 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 		{{- end }}
 		case "{{ $e.Name }}":
 			{{- if $e.Unique }}
-			if e.Edges.{{ snakeToPascal $e.Name }} != nil && fieldValue.CanSet() {
-				edgeVal := entTo{{ $e.Type.Name }}[{{ $e.Type.Name }}](e.Edges.{{ snakeToPascal $e.Name }})
+			if e.Edges.{{ $e.StructField }} != nil && fieldValue.CanSet() {
+				edgeVal := entTo{{ $e.Type.Name }}[{{ $e.Type.Name }}](e.Edges.{{ $e.StructField }})
 				if fieldValue.Kind() == reflect.Ptr {
 					fieldValue.Set(reflect.ValueOf(&edgeVal))
 				} else {
@@ -158,10 +158,10 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 				}
 			}
 			{{- else }}
-			if e.Edges.{{ snakeToPascal $e.Name }} != nil && fieldValue.CanSet() && fieldValue.Kind() == reflect.Ptr &&
-				(len(e.Edges.{{ snakeToPascal $e.Name }}) == 0 || e.Edges.{{ snakeToPascal $e.Name }}[0] != nil) {
-				items := make([]{{ $e.Type.Name }}, len(e.Edges.{{ snakeToPascal $e.Name }}))
-				for idx, edgeEntity := range e.Edges.{{ snakeToPascal $e.Name }} {
+			if e.Edges.{{ $e.StructField }} != nil && fieldValue.CanSet() && fieldValue.Kind() == reflect.Ptr &&
+				(len(e.Edges.{{ $e.StructField }}) == 0 || e.Edges.{{ $e.StructField }}[0] != nil) {
+				items := make([]{{ $e.Type.Name }}, len(e.Edges.{{ $e.StructField }}))
+				for idx, edgeEntity := range e.Edges.{{ $e.StructField }} {
 					items[idx] = entTo{{ $e.Type.Name }}[{{ $e.Type.Name }}](edgeEntity)
 				}
 				fieldValue.Set(reflect.ValueOf(&items))
@@ -180,7 +180,9 @@ func {{ lower $node.Name }}ToEnt(m {{ $node.Name }}) *ent.{{ $node.Name }} {
 
 	{{- range $f := $node.Fields }}
 	{{- if isSensitive $f }}{{- continue }}{{- end }}
+	{{- if isReadOnly $f }}{{- continue }}{{- end }}
 	{{- if isUUID $f }}
+	{{- if or $f.Optional $f.Nillable }}
 	if m.{{ oapiFieldName $f.StructField }} != nil {
 		id := uuid.UUID(*m.{{ oapiFieldName $f.StructField }})
 		{{- if $f.Nillable }}
@@ -189,20 +191,33 @@ func {{ lower $node.Name }}ToEnt(m {{ $node.Name }}) *ent.{{ $node.Name }} {
 		e.{{ $f.StructField }} = id
 		{{- end }}
 	}
+	{{- else }}
+	e.{{ $f.StructField }} = uuid.UUID(m.{{ oapiFieldName $f.StructField }})
+	{{- end }}
 	{{- else if isEnum $f }}
+	{{- if or $f.Optional $f.Nillable }}
 	if m.{{ oapiFieldName $f.StructField }} != nil {
 		e.{{ $f.StructField }} = {{ lower $node.Name }}.{{ oapiFieldName $f.StructField }}(string(*m.{{ oapiFieldName $f.StructField }}))
 	}
+	{{- else }}
+	e.{{ $f.StructField }} = {{ lower $node.Name }}.{{ oapiFieldName $f.StructField }}(string(m.{{ oapiFieldName $f.StructField }}))
+	{{- end }}
 	{{- else if isSlice $f }}
+	{{- if $f.Optional }}
 	if m.{{ oapiFieldName $f.StructField }} != nil {
 		e.{{ $f.StructField }} = *m.{{ oapiFieldName $f.StructField }}
 	}
+	{{- else }}
+	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
+	{{- end }}
 	{{- else if $f.Nillable }}
 	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
-	{{- else }}
+	{{- else if $f.Optional }}
 	if m.{{ oapiFieldName $f.StructField }} != nil {
 		e.{{ $f.StructField }} = *m.{{ oapiFieldName $f.StructField }}
 	}
+	{{- else }}
+	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
 	{{- end }}
 	{{- end }}
 
