@@ -1,0 +1,254 @@
+{{- define "list" -}}
+// List{{ .Node.Name }} retrieves a list of {{ plural .Node.Name }} with pagination.
+func (h *EntHandler) List{{ .Node.Name }}(ctx context.Context, request List{{ .Node.Name }}RequestObject) (List{{ .Node.Name }}ResponseObject, error) {
+{{ if .GuardCode }}
+{{ .GuardCode }}
+{{ end }}
+	if custom{{ .Node.Name }}List != nil {
+		return custom{{ .Node.Name }}List(ctx, h.client, request)
+	}
+
+	q := h.client.{{ .Node.Name }}.Query()
+{{- if .SoftDelete }}
+
+	// Soft-delete: exclude deleted entities
+	q = q.Where({{ lower .Node.Name }}.DeletedAtIsNil())
+{{- end }}
+
+	// Apply field filters from query params
+	{{- range .FilterFields }}
+	{{- if eq .FieldType "string" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Contains; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}ContainsFold(*v))
+	}
+	{{- else if eq .FieldType "int" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Gte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}GTE(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Lte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}LTE(*v))
+	}
+	{{- else if eq .FieldType "float" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Gte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}GTE(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Lte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}LTE(*v))
+	}
+	{{- else if eq .FieldType "bool" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
+	}
+	{{- else if eq .FieldType "enum" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ({{ lower $.Node.Name }}.{{ .StructField }}(*v)))
+	}
+	{{- else if eq .FieldType "time" }}
+	if v := request.Params.{{ snakeToPascal .Name }}Gte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}GTE(*v))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Lte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}LTE(*v))
+	}
+	{{- else if eq .FieldType "uuid" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
+	}
+	{{- end }}
+	{{- end }}
+{{- if .SortFields }}
+
+	// Apply sorting from ?sort=field:direction
+	if v := request.Params.Sort; v != nil {
+		sortAllowed := map[string]string{
+			{{- range .SortFields }}
+			"{{ .Name }}": {{ lower $.Node.Name }}.Field{{ .StructField }},
+			{{- end }}
+		}
+		for _, part := range strings.Split(*v, ",") {
+			kv := strings.SplitN(strings.TrimSpace(part), ":", 2)
+			dir := "asc"
+			if len(kv) == 2 { dir = kv[1] }
+			if entField, ok := sortAllowed[kv[0]]; ok {
+				if dir == "desc" {
+					q = q.Order(ent.Desc(entField))
+				} else {
+					q = q.Order(ent.Asc(entField))
+				}
+			}
+		}
+	}
+	{{- if .DefaultSort }} else {
+		// Default sort: {{ .DefaultSort }}
+		{{- $parts := split .DefaultSort ":" }}
+		q = q.Order(ent.{{ if eq (index $parts 1) "desc" }}Desc{{ else }}Asc{{ end }}({{ lower $.Node.Name }}.Field{{ snakeToPascal (index $parts 0) }}))
+	}
+	{{- end }}
+{{- end }}
+{{- if .FieldSelection }}
+
+	// Apply field selection from ?fields=id,name
+	if v := request.Params.Fields; v != nil {
+		allowedFields := map[string]string{
+			"id": {{ lower .Node.Name }}.FieldID,
+			{{- range $f := .Node.Fields }}
+			{{- if and (ne (lower $f.Name) "id") (not (isSensitive $f)) }}
+			"{{ $f.Name }}": {{ lower $.Node.Name }}.Field{{ $f.StructField }},
+			{{- end }}
+			{{- end }}
+		}
+		var selectFields []string
+		for _, f := range strings.Split(*v, ",") {
+			f = strings.TrimSpace(f)
+			if entField, ok := allowedFields[f]; ok {
+				selectFields = append(selectFields, entField)
+			}
+		}
+		if len(selectFields) > 0 {
+			q = q.Select(selectFields...)
+		}
+	}
+{{- end }}
+
+	// Before hook: modify query (add filters, sorting, joins) or return error
+	if before{{ .Node.Name }}List != nil {
+		if err := before{{ .Node.Name }}List(ctx, h.client, &q); err != nil {
+			return nil, err
+		}
+	}
+{{- if .CursorPag }}
+
+	// Cursor-based pagination
+	limit := {{ .DefaultPageSize }}
+	if request.Params.Limit != nil && *request.Params.Limit > 0 {
+		limit = *request.Params.Limit
+	}
+	if limit > 100 { limit = 100 }
+
+	if request.Params.Cursor != nil && *request.Params.Cursor != "" {
+		cursorBytes, decErr := base64.RawURLEncoding.DecodeString(*request.Params.Cursor)
+		if decErr == nil {
+			cursorID, parseErr := uuid.Parse(string(cursorBytes))
+			if parseErr == nil {
+				q = q.Where({{ lower .Node.Name }}.IDGT(cursorID))
+			}
+		}
+	}
+
+	q = q.Order(ent.Asc({{ lower .Node.Name }}.FieldID)).Limit(limit + 1)
+
+	entities, err := q.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// After hook
+	if after{{ .Node.Name }}List != nil {
+		entities, err = after{{ .Node.Name }}List(ctx, h.client, entities)
+		if err != nil {
+			return nil, err
+		}
+	}
+{{ if .AfterHookCode }}
+{{ .AfterHookCode }}
+{{ end }}
+	var nextCursor *string
+	if len(entities) > limit {
+		entities = entities[:limit]
+		nc := base64.RawURLEncoding.EncodeToString([]byte(entities[limit-1].ID.String()))
+		nextCursor = &nc
+	}
+
+	result := make([]{{ .Node.Name }}, len(entities))
+	for i, e := range entities {
+		result[i] = entTo{{ .Node.Name }}[{{ .Node.Name }}](e)
+	}
+
+	return cursor{{ .Node.Name }}ListResponse{
+		Items:      result,
+		NextCursor: nextCursor,
+	}, nil
+}
+
+type cursor{{ .Node.Name }}ListResponse struct {
+	Items      []{{ .Node.Name }} `json:"items"`
+	NextCursor *string          `json:"next_cursor,omitempty"`
+}
+
+func (r cursor{{ .Node.Name }}ListResponse) VisitList{{ .Node.Name }}Response(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	return json.NewEncoder(w).Encode(r)
+}
+{{- else }}
+
+	// Total count (after before-hook filters, before pagination)
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Apply pagination at DB level
+	page := 1
+	if request.Params.Page != nil && *request.Params.Page > 0 {
+		page = *request.Params.Page
+	}
+	itemsPerPage := {{ .DefaultPageSize }}
+	if request.Params.ItemsPerPage != nil && *request.Params.ItemsPerPage > 0 {
+		itemsPerPage = *request.Params.ItemsPerPage
+	}
+	q = q.Limit(itemsPerPage).Offset((page - 1) * itemsPerPage)
+
+	// Execute query
+	entities, err := q.All(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// After hook: enrich, sort, or post-process the paginated slice
+	if after{{ .Node.Name }}List != nil {
+		entities, err = after{{ .Node.Name }}List(ctx, h.client, entities)
+		if err != nil {
+			return nil, err
+		}
+	}
+{{ if .AfterHookCode }}
+{{ .AfterHookCode }}
+{{ end }}
+	// Convert to API response
+	result := make([]{{ .Node.Name }}, len(entities))
+	for i, e := range entities {
+		result[i] = entTo{{ .Node.Name }}[{{ .Node.Name }}](e)
+	}
+
+	return paginated{{ .Node.Name }}ListResponse{
+		Items:        result,
+		Total:        total,
+		Page:         page,
+		ItemsPerPage: itemsPerPage,
+	}, nil
+}
+
+type paginated{{ .Node.Name }}ListResponse struct {
+	Items        []{{ .Node.Name }} `json:"items"`
+	Total        int              `json:"total"`
+	Page         int              `json:"page"`
+	ItemsPerPage int              `json:"items_per_page"`
+}
+
+func (r paginated{{ .Node.Name }}ListResponse) VisitList{{ .Node.Name }}Response(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	return json.NewEncoder(w).Encode(r)
+}
+{{- end }}
+{{- end -}}

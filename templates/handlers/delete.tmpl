@@ -1,0 +1,43 @@
+{{- define "delete" -}}
+// Delete{{ .Node.Name }} deletes a {{ .Node.Name }} by ID.
+func (h *EntHandler) Delete{{ .Node.Name }}(ctx context.Context, request Delete{{ .Node.Name }}RequestObject) (Delete{{ .Node.Name }}ResponseObject, error) {
+{{ if .GuardCode }}
+{{ .GuardCode }}
+{{ end }}
+	if custom{{ .Node.Name }}Delete != nil {
+		return custom{{ .Node.Name }}Delete(ctx, h.client, request)
+	}
+
+	// Call before hook if defined
+	if before{{ .Node.Name }}Delete != nil {
+		if err := before{{ .Node.Name }}Delete(ctx, h.client, request.Id); err != nil {
+			return nil, err
+		}
+	}
+{{- if .SoftDelete }}
+
+	// Soft-delete: set deleted_at instead of removing
+	_, err := h.client.{{ .Node.Name }}.UpdateOneID(request.Id).SetDeletedAt(time.Now()).Save(ctx)
+{{- else }}
+
+	err := h.client.{{ .Node.Name }}.DeleteOneID(request.Id).Exec(ctx)
+{{- end }}
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return Delete{{ .Node.Name }}404JSONResponse{}, nil
+		}
+		return nil, err
+	}
+
+	// Call after hook if defined
+	if after{{ .Node.Name }}Delete != nil {
+		if err := after{{ .Node.Name }}Delete(ctx, h.client, request.Id); err != nil {
+			return nil, err
+		}
+	}
+{{ if .AfterHookCode }}
+{{ .AfterHookCode }}
+{{ end }}
+	return Delete{{ .Node.Name }}204Response{}, nil
+}
+{{- end -}}

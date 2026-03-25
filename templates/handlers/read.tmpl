@@ -1,0 +1,78 @@
+{{- define "read" -}}
+// {{ lower .Node.Name }}ReadResponse wraps the full {{ .Node.Name }} type (with edges) for read responses.
+type {{ lower .Node.Name }}ReadResponse {{ .Node.Name }}
+
+func (r {{ lower .Node.Name }}ReadResponse) VisitRead{{ .Node.Name }}Response(w http.ResponseWriter) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(200)
+	return json.NewEncoder(w).Encode({{ .Node.Name }}(r))
+}
+
+// Read{{ .Node.Name }} retrieves a single {{ .Node.Name }} by ID.
+func (h *EntHandler) Read{{ .Node.Name }}(ctx context.Context, request Read{{ .Node.Name }}RequestObject) (Read{{ .Node.Name }}ResponseObject, error) {
+{{ if .GuardCode }}
+{{ .GuardCode }}
+{{ end }}
+	if custom{{ .Node.Name }}Read != nil {
+		return custom{{ .Node.Name }}Read(ctx, h.client, request)
+	}
+
+	q := h.client.{{ .Node.Name }}.Query().Where({{ lower .Node.Name }}.ID(request.Id))
+{{- if .SoftDelete }}
+
+	// Soft-delete: exclude deleted entities
+	q = q.Where({{ lower .Node.Name }}.DeletedAtIsNil())
+{{- end }}
+{{- if .FieldSelection }}
+
+	// Apply field selection from ?fields=id,name
+	if v := request.Params.Fields; v != nil {
+		allowedFields := map[string]string{
+			"id": {{ lower .Node.Name }}.FieldID,
+			{{- range $f := .Node.Fields }}
+			{{- if and (ne (lower $f.Name) "id") (not (isSensitive $f)) }}
+			"{{ $f.Name }}": {{ lower $.Node.Name }}.Field{{ $f.StructField }},
+			{{- end }}
+			{{- end }}
+		}
+		var selectFields []string
+		for _, f := range strings.Split(*v, ",") {
+			f = strings.TrimSpace(f)
+			if entField, ok := allowedFields[f]; ok {
+				selectFields = append(selectFields, entField)
+			}
+		}
+		if len(selectFields) > 0 {
+			q = q.Select(selectFields...)
+		}
+	}
+{{- end }}
+
+	// Before hook: modify query (add eager loading, filters) or return error
+	if before{{ .Node.Name }}Read != nil {
+		if err := before{{ .Node.Name }}Read(ctx, h.client, &q); err != nil {
+			return nil, err
+		}
+	}
+
+	entity, err := q.Only(ctx)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return Read{{ .Node.Name }}404JSONResponse{}, nil
+		}
+		return nil, err
+	}
+
+	// Call after hook if defined
+	if after{{ .Node.Name }}Read != nil {
+		if err := after{{ .Node.Name }}Read(ctx, h.client, entity); err != nil {
+			return nil, err
+		}
+	}
+{{ if .AfterHookCode }}
+{{ .AfterHookCode }}
+{{ end }}
+	result := entTo{{ .Node.Name }}[{{ .Node.Name }}](entity)
+	return {{ lower .Node.Name }}ReadResponse(result), nil
+}
+{{- end -}}

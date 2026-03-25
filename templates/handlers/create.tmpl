@@ -1,0 +1,66 @@
+{{- define "create" -}}
+// Create{{ .Node.Name }} creates a new {{ .Node.Name }}.
+func (h *EntHandler) Create{{ .Node.Name }}(ctx context.Context, request Create{{ .Node.Name }}RequestObject) (Create{{ .Node.Name }}ResponseObject, error) {
+{{ if .GuardCode }}
+{{ .GuardCode }}
+{{ end }}
+	if custom{{ .Node.Name }}Create != nil {
+		return custom{{ .Node.Name }}Create(ctx, h.client, request)
+	}
+
+	builder := h.client.{{ .Node.Name }}.Create()
+
+	// Set fields from request
+	{{- range $f := .Node.Fields }}
+	{{- $fieldName := lower $f.Name }}
+	{{- if and (not $f.Immutable) (not (isReadOnly $f)) (not (isSensitive $f)) (ne $fieldName "id") (ne $fieldName "created_at") (ne $fieldName "updated_at") }}
+	{{- $apiFieldName := oapiFieldName $f.StructField }}
+	{{- if $f.Optional }}
+	if request.Body.{{ $apiFieldName }} != nil {
+		{{- if isUUID $f }}
+		builder.Set{{ $f.StructField }}(uuid.UUID(*request.Body.{{ $apiFieldName }}))
+		{{- else if isEnum $f }}
+		builder.Set{{ $f.StructField }}({{ lower $.Node.Name }}.{{ $apiFieldName }}(string(*request.Body.{{ $apiFieldName }})))
+		{{- else if isSlice $f }}
+		builder.Set{{ $f.StructField }}(*request.Body.{{ $apiFieldName }})
+		{{- else }}
+		builder.Set{{ $f.StructField }}(*request.Body.{{ $apiFieldName }})
+		{{- end }}
+	}
+	{{- else }}
+	{{- if isUUID $f }}
+	builder.Set{{ $f.StructField }}(uuid.UUID(request.Body.{{ $apiFieldName }}))
+	{{- else if isEnum $f }}
+	builder.Set{{ $f.StructField }}({{ lower $.Node.Name }}.{{ $apiFieldName }}(string(request.Body.{{ $apiFieldName }})))
+	{{- else }}
+	builder.Set{{ $f.StructField }}(request.Body.{{ $apiFieldName }})
+	{{- end }}
+	{{- end }}
+	{{- end }}
+	{{- end }}
+
+	// Call before hook if defined
+	if before{{ .Node.Name }}Create != nil {
+		if err := before{{ .Node.Name }}Create(ctx, h.client, builder); err != nil {
+			return nil, err
+		}
+	}
+
+	entity, err := builder.Save(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Call after hook if defined
+	if after{{ .Node.Name }}Create != nil {
+		if err := after{{ .Node.Name }}Create(ctx, h.client, entity); err != nil {
+			return nil, err
+		}
+	}
+{{ if .AfterHookCode }}
+{{ .AfterHookCode }}
+{{ end }}
+	result := entTo{{ .Node.Name }}[{{ .Node.Name }}](entity)
+	return Create{{ .Node.Name }}200JSONResponse(result), nil
+}
+{{- end -}}
