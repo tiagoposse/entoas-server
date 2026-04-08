@@ -39,7 +39,14 @@ func (h *EntHandler) Update{{ .Node.Name }}(ctx context.Context, request Update{
 	}
 	{{- else }}
 	if request.Body.{{ $apiFieldName }} != nil {
-		{{- if isUUID $f }}
+		{{- if isJSONCustom $f }}
+		{
+			raw, _ := json.Marshal(*request.Body.{{ $apiFieldName }})
+			var typed {{ jsonGoType $f }}
+			json.Unmarshal(raw, &typed)
+			builder.Set{{ $f.StructField }}(typed)
+		}
+		{{- else if isUUID $f }}
 		builder.Set{{ $f.StructField }}(uuid.UUID(*request.Body.{{ $apiFieldName }}))
 		{{- else if isEnum $f }}
 		builder.Set{{ $f.StructField }}({{ lower $.Node.Name }}.{{ $apiFieldName }}(string(*request.Body.{{ $apiFieldName }})))

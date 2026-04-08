@@ -24,6 +24,16 @@ func (h *EntHandler) List{{ .Node.Name }}(ctx context.Context, request List{{ .N
 	if v := request.Params.{{ snakeToPascal .Name }}Contains; v != nil {
 		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}ContainsFold(*v))
 	}
+	{{- else if eq .FieldType "int64" }}
+	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(int64(*v)))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Gte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}GTE(int64(*v)))
+	}
+	if v := request.Params.{{ snakeToPascal .Name }}Lte; v != nil {
+		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}LTE(int64(*v)))
+	}
 	{{- else if eq .FieldType "int" }}
 	if v := request.Params.{{ snakeToPascal .Name }}; v != nil {
 		q = q.Where({{ lower $.Node.Name }}.{{ .StructField }}EQ(*v))
@@ -118,6 +128,60 @@ func (h *EntHandler) List{{ .Node.Name }}(ctx context.Context, request List{{ .N
 		}
 	}
 {{- end }}
+{{- if .AutoExpand }}
+
+	// Auto-expand edges
+	{{- range .AutoExpand }}
+	{{- $tn := lower .TypeName }}
+	{{- if .Fields }}
+	q = q.With{{ .StructField }}(func(sq *ent.{{ .TypeName }}Query) {
+		sq.Select({{ range $i, $f := .Fields }}{{ if $i }}, {{ end }}{{ $tn }}.{{ $f.EntConst }}{{ end }})
+	})
+	{{- else }}
+	q = q.With{{ .StructField }}()
+	{{- end }}
+	{{- end }}
+{{- end }}
+{{- if .EdgeExpansion }}
+
+	// Apply edge expansion from ?expand=edge1,edge2.nested
+	if v := request.Params.Expand; v != nil {
+		expandSet := make(map[string][]string)
+		for _, exp := range strings.Split(*v, ",") {
+			exp = strings.TrimSpace(exp)
+			if exp == "" {
+				continue
+			}
+			parts := strings.SplitN(exp, ".", 2)
+			if len(parts) == 2 {
+				expandSet[parts[0]] = append(expandSet[parts[0]], parts[1])
+			} else {
+				if _, ok := expandSet[parts[0]]; !ok {
+					expandSet[parts[0]] = nil
+				}
+			}
+		}
+		{{- range .Edges }}
+		if nested, ok := expandSet["{{ .Name }}"]; ok {
+			{{- if .NestedEdges }}
+			q = q.With{{ .StructField }}(func(sq *ent.{{ .TypeName }}Query) {
+				for _, n := range nested {
+					switch n {
+					{{- range .NestedEdges }}
+					case "{{ .Name }}":
+						sq = sq.With{{ .StructField }}()
+					{{- end }}
+					}
+				}
+			})
+			{{- else }}
+			_ = nested
+			q = q.With{{ .StructField }}()
+			{{- end }}
+		}
+		{{- end }}
+	}
+{{- end }}
 
 	// Before hook: modify query (add filters, sorting, joins) or return error
 	if before{{ .Node.Name }}List != nil {
@@ -172,6 +236,19 @@ func (h *EntHandler) List{{ .Node.Name }}(ctx context.Context, request List{{ .N
 	for i, e := range entities {
 		result[i] = entTo{{ .Node.Name }}[{{ .Node.Name }}](e)
 	}
+{{- if .StripFields }}
+
+	// Strip private fields from response
+	for i := range result {
+		{{- if .StripFields.SelfCheck }}
+		if _viewerID := auth.OptionalAuth(ctx); _viewerID != uuid.UUID(result[i].Id) {
+			strip{{ .Node.Name }}Fields(&result[i])
+		}
+		{{- else }}
+		strip{{ .Node.Name }}Fields(&result[i])
+		{{- end }}
+	}
+{{- end }}
 
 	return cursor{{ .Node.Name }}ListResponse{
 		Items:      result,
@@ -229,6 +306,19 @@ func (r cursor{{ .Node.Name }}ListResponse) VisitList{{ .Node.Name }}Response(w 
 	for i, e := range entities {
 		result[i] = entTo{{ .Node.Name }}[{{ .Node.Name }}](e)
 	}
+{{- if .StripFields }}
+
+	// Strip private fields from response
+	for i := range result {
+		{{- if .StripFields.SelfCheck }}
+		if _viewerID := auth.OptionalAuth(ctx); _viewerID != uuid.UUID(result[i].Id) {
+			strip{{ .Node.Name }}Fields(&result[i])
+		}
+		{{- else }}
+		strip{{ .Node.Name }}Fields(&result[i])
+		{{- end }}
+	}
+{{- end }}
 
 	return paginated{{ .Node.Name }}ListResponse{
 		Items:        result,

@@ -13,11 +13,18 @@ func (h *EntHandler) Create{{ .Node.Name }}(ctx context.Context, request Create{
 	// Set fields from request
 	{{- range $f := .Node.Fields }}
 	{{- $fieldName := lower $f.Name }}
-	{{- if and (not $f.Immutable) (not (isReadOnly $f)) (not (isSensitive $f)) (ne $fieldName "id") (ne $fieldName "created_at") (ne $fieldName "updated_at") }}
+	{{- if and (not (isReadOnly $f)) (not (isSensitive $f)) (ne $fieldName "id") (ne $fieldName "created_at") (ne $fieldName "updated_at") }}
 	{{- $apiFieldName := oapiFieldName $f.StructField }}
 	{{- if $f.Optional }}
 	if request.Body.{{ $apiFieldName }} != nil {
-		{{- if isUUID $f }}
+		{{- if isJSONCustom $f }}
+		{
+			raw, _ := json.Marshal(*request.Body.{{ $apiFieldName }})
+			var typed {{ jsonGoType $f }}
+			json.Unmarshal(raw, &typed)
+			builder.Set{{ $f.StructField }}(typed)
+		}
+		{{- else if isUUID $f }}
 		builder.Set{{ $f.StructField }}(uuid.UUID(*request.Body.{{ $apiFieldName }}))
 		{{- else if isEnum $f }}
 		builder.Set{{ $f.StructField }}({{ lower $.Node.Name }}.{{ $apiFieldName }}(string(*request.Body.{{ $apiFieldName }})))
@@ -28,7 +35,14 @@ func (h *EntHandler) Create{{ .Node.Name }}(ctx context.Context, request Create{
 		{{- end }}
 	}
 	{{- else }}
-	{{- if isUUID $f }}
+	{{- if isJSONCustom $f }}
+	{
+		raw, _ := json.Marshal(request.Body.{{ $apiFieldName }})
+		var typed {{ jsonGoType $f }}
+		json.Unmarshal(raw, &typed)
+		builder.Set{{ $f.StructField }}(typed)
+	}
+	{{- else if isUUID $f }}
 	builder.Set{{ $f.StructField }}(uuid.UUID(request.Body.{{ $apiFieldName }}))
 	{{- else if isEnum $f }}
 	builder.Set{{ $f.StructField }}({{ lower $.Node.Name }}.{{ $apiFieldName }}(string(request.Body.{{ $apiFieldName }})))

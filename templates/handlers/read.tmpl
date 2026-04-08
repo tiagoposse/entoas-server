@@ -47,6 +47,60 @@ func (h *EntHandler) Read{{ .Node.Name }}(ctx context.Context, request Read{{ .N
 		}
 	}
 {{- end }}
+{{- if .AutoExpand }}
+
+	// Auto-expand edges
+	{{- range .AutoExpand }}
+	{{- $tn := lower .TypeName }}
+	{{- if .Fields }}
+	q = q.With{{ .StructField }}(func(sq *ent.{{ .TypeName }}Query) {
+		sq.Select({{ range $i, $f := .Fields }}{{ if $i }}, {{ end }}{{ $tn }}.{{ $f.EntConst }}{{ end }})
+	})
+	{{- else }}
+	q = q.With{{ .StructField }}()
+	{{- end }}
+	{{- end }}
+{{- end }}
+{{- if .EdgeExpansion }}
+
+	// Apply edge expansion from ?expand=edge1,edge2.nested
+	if v := request.Params.Expand; v != nil {
+		expandSet := make(map[string][]string)
+		for _, exp := range strings.Split(*v, ",") {
+			exp = strings.TrimSpace(exp)
+			if exp == "" {
+				continue
+			}
+			parts := strings.SplitN(exp, ".", 2)
+			if len(parts) == 2 {
+				expandSet[parts[0]] = append(expandSet[parts[0]], parts[1])
+			} else {
+				if _, ok := expandSet[parts[0]]; !ok {
+					expandSet[parts[0]] = nil
+				}
+			}
+		}
+		{{- range .Edges }}
+		if nested, ok := expandSet["{{ .Name }}"]; ok {
+			{{- if .NestedEdges }}
+			q = q.With{{ .StructField }}(func(sq *ent.{{ .TypeName }}Query) {
+				for _, n := range nested {
+					switch n {
+					{{- range .NestedEdges }}
+					case "{{ .Name }}":
+						sq = sq.With{{ .StructField }}()
+					{{- end }}
+					}
+				}
+			})
+			{{- else }}
+			_ = nested
+			q = q.With{{ .StructField }}()
+			{{- end }}
+		}
+		{{- end }}
+	}
+{{- end }}
 
 	// Before hook: modify query (add eager loading, filters) or return error
 	if before{{ .Node.Name }}Read != nil {
@@ -73,6 +127,17 @@ func (h *EntHandler) Read{{ .Node.Name }}(ctx context.Context, request Read{{ .N
 {{ .AfterHookCode }}
 {{ end }}
 	result := entTo{{ .Node.Name }}[{{ .Node.Name }}](entity)
+{{- if .StripFields }}
+
+	// Strip private fields from response
+	{{- if .StripFields.SelfCheck }}
+	if _viewerID := auth.OptionalAuth(ctx); _viewerID != uuid.UUID(result.Id) {
+		strip{{ .Node.Name }}Fields(&result)
+	}
+	{{- else }}
+	strip{{ .Node.Name }}Fields(&result)
+	{{- end }}
+{{- end }}
 	return {{ lower .Node.Name }}ReadResponse(result), nil
 }
 {{- end -}}

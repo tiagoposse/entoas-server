@@ -3,23 +3,51 @@
 package {{ .Package }}
 
 import (
+	"encoding/json"
 	"reflect"
 	"strings"
+	"time"
 	"{{ .Graph.Config.Package }}"
-	{{- if hasUUIDFields .Graph }}
-	"github.com/google/uuid"
-	{{- end }}
 	openapi_types "github.com/oapi-codegen/runtime/types"
-	{{- range $node := .Graph.Nodes }}
-	{{- if hasEnum $node }}
-	{{ lower $node.Name }} "{{ $.Graph.Config.Package }}/{{ lower $node.Name }}"
-	{{- end }}
-	{{- end }}
 )
 
 // ptrTo returns a pointer to the given value.
 func ptrTo[T any](v T) *T {
 	return &v
+}
+
+var timeType = reflect.TypeOf(time.Time{})
+
+// isEpochToTime checks if val is an int64 (or *int64) and field expects time.Time (or *time.Time).
+func isEpochToTime(val reflect.Value, field reflect.Value) bool {
+	valKind := val.Kind()
+	if valKind == reflect.Ptr {
+		if val.IsNil() { return false }
+		valKind = val.Elem().Kind()
+	}
+	if valKind != reflect.Int64 { return false }
+	ft := field.Type()
+	if ft == timeType { return true }
+	if ft.Kind() == reflect.Ptr && ft.Elem() == timeType { return true }
+	return false
+}
+
+// setEpochTime converts an int64 epoch value to time.Time and sets it on the field.
+func setEpochTime(val reflect.Value, field reflect.Value) {
+	var epoch int64
+	if val.Kind() == reflect.Ptr {
+		if val.IsNil() { return }
+		epoch = val.Elem().Int()
+	} else {
+		epoch = val.Int()
+	}
+	if epoch == 0 { return } // skip zero epoch
+	t := time.Unix(epoch, 0)
+	if field.Type() == timeType {
+		field.Set(reflect.ValueOf(t))
+	} else if field.Kind() == reflect.Ptr && field.Type().Elem() == timeType {
+		field.Set(reflect.ValueOf(&t))
+	}
 }
 
 {{- range $node := .Graph.Nodes }}
@@ -98,6 +126,20 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 					fieldValue.Set(enumVal)
 				}
 			}
+			{{- else if isJSONCustom $f }}
+			{
+				raw, _ := json.Marshal(e.{{ $f.StructField }})
+				converted := reflect.New(fieldValue.Type())
+				if fieldValue.Kind() == reflect.Ptr {
+					converted = reflect.New(fieldValue.Type().Elem())
+				}
+				json.Unmarshal(raw, converted.Interface())
+				if fieldValue.Kind() == reflect.Ptr {
+					fieldValue.Set(converted)
+				} else {
+					fieldValue.Set(converted.Elem())
+				}
+			}
 			{{- else if isSlice $f }}
 			if fieldValue.Kind() == reflect.Ptr && fieldValue.Type().Elem().Kind() == reflect.Slice {
 				fieldValue.Set(reflect.ValueOf(&e.{{ $f.StructField }}))
@@ -131,6 +173,9 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 						ptr.Elem().Set(val)
 						fieldValue.Set(ptr)
 					}
+				} else if isEpochToTime(val, fieldValue) {
+					// int64 epoch → time.Time conversion
+					setEpochTime(val, fieldValue)
 				}
 			}
 			{{- end }}
@@ -175,51 +220,58 @@ func entTo{{ $node.Name }}[T any](e *ent.{{ $node.Name }}) T {
 }
 
 // {{ lower $node.Name }}ToEnt converts an API {{ $node.Name }} model to an Ent {{ $node.Name }} entity.
+// Uses reflection to handle both pointer and non-pointer API field types safely.
 func {{ lower $node.Name }}ToEnt(m {{ $node.Name }}) *ent.{{ $node.Name }} {
 	e := &ent.{{ $node.Name }}{}
 
-	{{- range $f := $node.Fields }}
-	{{- if isSensitive $f }}{{- continue }}{{- end }}
-	{{- if isReadOnly $f }}{{- continue }}{{- end }}
-	{{- if isUUID $f }}
-	{{- if or $f.Optional $f.Nillable }}
-	if m.{{ oapiFieldName $f.StructField }} != nil {
-		id := uuid.UUID(*m.{{ oapiFieldName $f.StructField }})
-		{{- if $f.Nillable }}
-		e.{{ $f.StructField }} = &id
-		{{- else }}
-		e.{{ $f.StructField }} = id
-		{{- end }}
+	src := reflect.ValueOf(m)
+	srcType := src.Type()
+
+	for i := 0; i < srcType.NumField(); i++ {
+		sf := srcType.Field(i)
+		srcVal := src.Field(i)
+
+		jsonTag := sf.Tag.Get("json")
+		if jsonTag == "" || jsonTag == "-" {
+			continue
+		}
+		jsonName := strings.Split(jsonTag, ",")[0]
+
+		// Skip read-only, sensitive, and edge fields
+		switch jsonName {
+		case "id", "created_at", "updated_at", "last_used_at", "deleted_at", "retention_until":
+			continue
+		}
+
+		// Dereference pointer if needed
+		if srcVal.Kind() == reflect.Ptr {
+			if srcVal.IsNil() {
+				continue
+			}
+			srcVal = srcVal.Elem()
+		}
+
+		// Find matching dest field by trying known field name mappings
+		dstVal := reflect.ValueOf(e).Elem()
+		dstType := dstVal.Type()
+		for j := 0; j < dstType.NumField(); j++ {
+			df := dstType.Field(j)
+			if strings.EqualFold(strings.ReplaceAll(df.Name, "_", ""), strings.ReplaceAll(sf.Name, "_", "")) ||
+				strings.EqualFold(df.Name, sf.Name) {
+				dstField := dstVal.Field(j)
+				if dstField.CanSet() && srcVal.Type().AssignableTo(dstField.Type()) {
+					dstField.Set(srcVal)
+				} else if dstField.CanSet() && srcVal.Type().ConvertibleTo(dstField.Type()) {
+					dstField.Set(srcVal.Convert(dstField.Type()))
+				} else if dstField.CanSet() && dstField.Kind() == reflect.Ptr && srcVal.Type().AssignableTo(dstField.Type().Elem()) {
+					ptr := reflect.New(dstField.Type().Elem())
+					ptr.Elem().Set(srcVal)
+					dstField.Set(ptr)
+				}
+				break
+			}
+		}
 	}
-	{{- else }}
-	e.{{ $f.StructField }} = uuid.UUID(m.{{ oapiFieldName $f.StructField }})
-	{{- end }}
-	{{- else if isEnum $f }}
-	{{- if or $f.Optional $f.Nillable }}
-	if m.{{ oapiFieldName $f.StructField }} != nil {
-		e.{{ $f.StructField }} = {{ lower $node.Name }}.{{ oapiFieldName $f.StructField }}(string(*m.{{ oapiFieldName $f.StructField }}))
-	}
-	{{- else }}
-	e.{{ $f.StructField }} = {{ lower $node.Name }}.{{ oapiFieldName $f.StructField }}(string(m.{{ oapiFieldName $f.StructField }}))
-	{{- end }}
-	{{- else if isSlice $f }}
-	{{- if $f.Optional }}
-	if m.{{ oapiFieldName $f.StructField }} != nil {
-		e.{{ $f.StructField }} = *m.{{ oapiFieldName $f.StructField }}
-	}
-	{{- else }}
-	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
-	{{- end }}
-	{{- else if $f.Nillable }}
-	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
-	{{- else if $f.Optional }}
-	if m.{{ oapiFieldName $f.StructField }} != nil {
-		e.{{ $f.StructField }} = *m.{{ oapiFieldName $f.StructField }}
-	}
-	{{- else }}
-	e.{{ $f.StructField }} = m.{{ oapiFieldName $f.StructField }}
-	{{- end }}
-	{{- end }}
 
 	return e
 }
